@@ -74,15 +74,19 @@ static bool DOSVESA_CreateWindow(SDL_VideoDevice *device, SDL_Window *window, SD
         if (window->requested_fullscreen_mode.internal) {
             // App explicitly set a fullscreen mode.
             mode = &window->requested_fullscreen_mode;
+            SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_CreateWindow: use requested fullscreen mode");
         } else if (window->floating.w > 0 && window->floating.h > 0) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_CreateWindow: use requested %dx%d window size", window->floating.w, window->floating.h);
             if (SDL_GetClosestFullscreenDisplayMode(display->id, window->floating.w, window->floating.h, 0.0f, false, &closest)) {
                 mode = &closest;
+                SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_CreateWindow: got closest mode: %dx%d@%.2fHz format:%s id:%ld internal:%p", mode->w, mode->h, mode->refresh_rate, SDL_GetPixelFormatName(mode->format), mode->displayID, mode->internal);
             }
         }
         if (!mode) {
             return true;
         }
 
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_CreateWindow: applying mode: %dx%d@%.2fHz format:%s id:%ld internal:%p", mode->w, mode->h, mode->refresh_rate, SDL_GetPixelFormatName(mode->format), mode->displayID, mode->internal);
         DOSVESA_ApplyModeForWindow(display, window, mode);
     }
 
@@ -102,6 +106,7 @@ static void DOSVESA_SetWindowSize(SDL_VideoDevice *device, SDL_Window *window)
         mode = &closest;
     }
 
+    SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetWindowSize: applying most close mode: %dx%d@%.2fHz format:%s id:%ld internal:%p", mode->w, mode->h, mode->refresh_rate, SDL_GetPixelFormatName(mode->format), mode->displayID, mode->internal);
     DOSVESA_ApplyModeForWindow(display, window, mode);
 
     // Invalidate the framebuffer so it gets recreated at the new size.
@@ -141,13 +146,15 @@ static bool DOSVESA_VideoInit(SDL_VideoDevice *device)
     //  We'll change to a real video mode after enumerating available modes below.
     SDL_DisplayMode mode;
     SDL_zero(mode);
-    mode.format = SDL_PIXELFORMAT_RGB565;
+    mode.format = SDL_PIXELFORMAT_INDEX8;
     mode.w = 320;
     mode.h = 200;
 
     SDL_VideoDisplay vdisplay;
     SDL_zero(vdisplay);
     SDL_memcpy(&vdisplay.desktop_mode, &mode, sizeof(mode));
+    SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_VideoInit: set desktop_mode: %dx%d@%.2fHz format:%s id:%ld internal:%p", mode.w, mode.h, mode.refresh_rate, SDL_GetPixelFormatName(mode.format), mode.displayID, mode.internal);
+
     vdisplay.name = (char *)DOSVESA_GetGPUName();
     SDL_DisplayID display_id = SDL_AddVideoDisplay(&vdisplay, false);
     if (!display_id) {
@@ -175,6 +182,7 @@ static bool DOSVESA_VideoInit(SDL_VideoDevice *device)
                 SDL_copyp(desktop_internal, (const SDL_DisplayModeData *)closest.internal);
                 SDL_copyp(&display->desktop_mode, &closest);
                 display->desktop_mode.internal = desktop_internal;
+                SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_VideoInit: set desktop_mode2: %dx%d@%.2fHz format:%s id:%ld internal:%p", closest.w, closest.h, closest.refresh_rate, SDL_GetPixelFormatName(closest.format), closest.displayID, desktop_internal);
             }
         }
     }

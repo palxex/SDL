@@ -1496,6 +1496,8 @@ const SDL_DisplayMode *SDL_GetDesktopDisplayMode(SDL_DisplayID displayID)
     return &display->desktop_mode;
 }
 
+bool bAfterSetCurrentDisplayMode = false;
+
 void SDL_SetCurrentDisplayMode(SDL_VideoDisplay *display, const SDL_DisplayMode *mode)
 {
     SDL_DisplayMode last_mode;
@@ -1507,6 +1509,8 @@ void SDL_SetCurrentDisplayMode(SDL_VideoDisplay *display, const SDL_DisplayMode 
     }
 
     display->current_mode = mode;
+    bAfterSetCurrentDisplayMode = true;
+
 
     if (DisplayModeChanged(&last_mode, mode)) {
         SDL_SendDisplayEvent(display, SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED, mode->w, mode->h);
@@ -1522,8 +1526,51 @@ const SDL_DisplayMode *SDL_GetCurrentDisplayMode(SDL_DisplayID displayID)
     return display->current_mode;
 }
 
+static char traceback_buf[4096];
+
+const char *get_traceback(void)
+{
+    unsigned long ebp;
+    char *p = traceback_buf;
+    int count = 0;
+
+    // 1. 读取当前函数的 EBP 寄存器
+    __asm__("movl %%ebp, %0" : "=r"(ebp));
+
+    // 2. 跳过当前函数的返回地址（即 get_traceback_string 本身）
+    //    我们直接从上一级开始
+    unsigned long *frame = (unsigned long *)ebp;
+    if (frame) {
+        // 上一级的返回地址在 frame[1] 中
+        unsigned long retaddr = frame[1];
+        if (retaddr) {
+            p += sprintf(p, "  0x%08lx\n", retaddr);
+            count++;
+        }
+        frame = (unsigned long *)frame[0];  // 进入上一级栈帧
+    }
+
+    // 3. 继续遍历
+    while (frame && count < 16) {
+        unsigned long retaddr = frame[1];
+        if (retaddr == 0 || retaddr < 0x1000) break;  // 保护
+        p += sprintf(p, "  0x%08lx\n", retaddr);
+        count++;
+        frame = (unsigned long *)frame[0];
+        if ((unsigned long)frame < 0x1000) break;
+    }
+
+    // 如果没有抓到任何地址，放个提示
+    if (count == 0) {
+        p += sprintf(p, "  (no stack frames)\n");
+    }
+
+    return traceback_buf;
+}
 bool SDL_SetDisplayModeForDisplay(SDL_VideoDisplay *display, SDL_DisplayMode *mode)
 {
+    SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_SetDisplayModeForDisplay traceback:%s", get_traceback());
+
     /* Mode switching is being emulated per-window; nothing to do and cannot fail,
      * except for XWayland, which still needs the actual mode setting call since
      * it's emulated via the XRandR interface.
@@ -1540,7 +1587,14 @@ bool SDL_SetDisplayModeForDisplay(SDL_VideoDisplay *display, SDL_DisplayMode *mo
     // fullscreen so that it can handle switching back to the desktop correctly.
 #ifndef SDL_PLATFORM_RISCOS
     if (mode == display->current_mode) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_SetDisplayModeForDisplay: SAME old mode: %dx%d@%.2fHz format:%s id:%ld internal:%p, new mode: %dx%d@%.2fHz format:%s id:%ld internal:%p", display->current_mode->w, display->current_mode->h, display->current_mode->refresh_rate, SDL_GetPixelFormatName(display->current_mode->format), display->current_mode->displayID, display->current_mode->internal, mode->w, mode->h, mode->refresh_rate, SDL_GetPixelFormatName(mode->format), mode->displayID, mode->internal);
         return true;
+    }else{
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_SetDisplayModeForDisplay: NOT SAME old mode: %dx%d@%.2fHz format:%s id:%ld internal:%p, new mode: %dx%d@%.2fHz format:%s id:%ld internal:%p", display->current_mode->w, display->current_mode->h, display->current_mode->refresh_rate, SDL_GetPixelFormatName(display->current_mode->format), display->current_mode->displayID, display->current_mode->internal, mode->w, mode->h, mode->refresh_rate, SDL_GetPixelFormatName(mode->format), mode->displayID, mode->internal);
+        // hack for correctly quit
+        if( bAfterSetCurrentDisplayMode )
+            if(mode->w == display->current_mode->w && mode->h == display->current_mode->h && mode->refresh_rate == display->current_mode->refresh_rate && mode->format == display->current_mode->format)
+                return true;
     }
 #endif
 
@@ -1928,6 +1982,7 @@ bool SDL_UpdateFullscreenMode(SDL_Window *window, SDL_FullscreenOp fullscreen, b
     int i;
 
     CHECK_WINDOW_MAGIC(window, false);
+    SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_UpdateFullscreenMode: window %p, fullscreen %d, commit %d", window, fullscreen, commit);
 
     window->fullscreen_exclusive = false;
     window->update_fullscreen_on_display_changed = false;
@@ -1940,6 +1995,7 @@ bool SDL_UpdateFullscreenMode(SDL_Window *window, SDL_FullscreenOp fullscreen, b
     // Get the correct display for this operation
     if (fullscreen) {
         display = SDL_GetVideoDisplayForFullscreenWindow(window);
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_UpdateFullscreenMode: ENTER; display %p, id %ld", display, display ? display->id : 0);
         if (!display) {
             // This should never happen, but it did...
             goto done;
@@ -1951,17 +2007,21 @@ bool SDL_UpdateFullscreenMode(SDL_Window *window, SDL_FullscreenOp fullscreen, b
                 break;
             }
         }
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_UpdateFullscreenMode: LEAVE; display %p, id %ld", display, display ? display->id : 0);
         if (!display || i == _this->num_displays) {
             // Already not fullscreen on any display
             display = NULL;
+        }else {
         }
     }
 
     if (fullscreen) {
         mode = (SDL_DisplayMode *)SDL_GetWindowFullscreenMode(window);
         if (mode) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_UpdateFullscreenMode: got fullscreen mode %dx%d@%.2fHz format:%s id:%ld internal:%p", mode->w, mode->h, mode->refresh_rate, SDL_GetPixelFormatName(mode->format), mode->displayID, mode->internal);
             window->fullscreen_exclusive = true;
         } else {
+            SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_UpdateFullscreenMode: no mode, zero current fullscreen mode");
             // Make sure the current mode is zeroed for fullscreen desktop.
             SDL_zero(window->current_fullscreen_mode);
         }
@@ -2028,6 +2088,7 @@ bool SDL_UpdateFullscreenMode(SDL_Window *window, SDL_FullscreenOp fullscreen, b
 
         display->fullscreen_active = window->fullscreen_exclusive;
 
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL_UpdateFullscreenMode: setting display mode for displayid %ld, mode %dx%d format:%s", display ? display->id : -1, mode ? mode->w : 0, mode ? mode->h : 0, mode ? SDL_GetPixelFormatName(mode->format) : "N/A");
         if (!SDL_SetDisplayModeForDisplay(display, mode)) {
             goto error;
         }

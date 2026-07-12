@@ -493,8 +493,10 @@ bool DOSVESA_SetDisplayMode(SDL_VideoDevice *device, SDL_VideoDisplay *sdl_displ
 {
     SDL_VideoData *data = device->internal;
     const SDL_DisplayModeData *modedata = mode->internal;
+    SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: %dx%d@%d bpp", mode->w, mode->h, SDL_BITSPERPIXEL(mode->format));
 
     if (data->current_mode.internal && (data->current_mode.internal->mode_id == modedata->mode_id)) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: already in requested mode");
         return true;
     }
 
@@ -508,6 +510,7 @@ bool DOSVESA_SetDisplayMode(SDL_VideoDevice *device, SDL_VideoDisplay *sdl_displ
     __dpmi_regs regs;
 
     if (modedata->mode_id == VGA_MODE_13H_SENTINEL) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: using legacy VGA mode 13h");
         // Set VGA mode 13h (320x200x256) via legacy BIOS call.
         SDL_zero(regs);
         regs.x.ax = 0x0013;
@@ -561,15 +564,18 @@ bool DOSVESA_SetDisplayMode(SDL_VideoDevice *device, SDL_VideoDisplay *sdl_displ
     __dpmi_int(0x10, &regs);
 
     if (regs.x.ax != 0x004F) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: failed to set VESA mode 0x%04X", modedata->mode_id);
         return SDL_SetError("Failed to set VESA video mode");
     }
 
     data->banked_mode = !use_lfb;
 
     if (use_lfb) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: using linear framebuffer mode");
         data->mapping.address = modedata->physical_base_addr;
         data->mapping.size = DOSVESA_GetVESATotalMemory();
         if (__dpmi_physical_address_mapping(&data->mapping) != 0) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: failed to map VESA video memory at 0x%08lX", data->mapping.address);
             SDL_zero(data->mapping);
             regs.x.ax = 0x03; // try to dump us back into text mode. Not sure if this is a good idea, though.
             __dpmi_int(0x10, &regs);
@@ -580,6 +586,7 @@ bool DOSVESA_SetDisplayMode(SDL_VideoDevice *device, SDL_VideoDisplay *sdl_displ
         // make sure framebuffer is blanked out.
         SDL_memset(DOS_PhysicalToLinear(data->mapping.address), '\0', (Uint32)modedata->h * (Uint32)modedata->pitch);
     } else {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: using banked framebuffer mode");
         // Banked mode: no physical address mapping needed.
         // Blank the visible framebuffer through the banked window.
         Uint32 total_bytes = (Uint32)modedata->h * (Uint32)modedata->pitch;
@@ -638,6 +645,7 @@ bool DOSVESA_SetDisplayMode(SDL_VideoDevice *device, SDL_VideoDisplay *sdl_displ
     // to the back page, so the performance benefit is minimal (just tear-free).
     // For simplicity, disable page-flipping in banked mode for now.
     if (!data->banked_mode && modedata->num_image_pages >= 1) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: page-flipping enabled (2 pages)");
         data->page_flip_available = true;
         data->current_page = 0;
         data->page_offset[0] = 0;
@@ -661,6 +669,7 @@ bool DOSVESA_SetDisplayMode(SDL_VideoDevice *device, SDL_VideoDisplay *sdl_displ
             __dpmi_int(0x10, &regs);
         }
     } else {
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: page-flipping not available");
         data->page_flip_available = false;
         data->current_page = 0;
         data->page_offset[0] = 0;
@@ -668,6 +677,7 @@ bool DOSVESA_SetDisplayMode(SDL_VideoDevice *device, SDL_VideoDisplay *sdl_displ
     }
 
     if (SDL_GetMouse()->internal != NULL) { // internal != NULL) == int 33h services available.
+        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "DOSVESA_SetDisplayMode: setting mouse bounds to %dx%d", mode->w, mode->h);
         regs.x.ax = 0x7;                    // set mouse min/max horizontal position.
         regs.x.cx = 0;
         regs.x.dx = (Uint16)(mode->w - 1);
